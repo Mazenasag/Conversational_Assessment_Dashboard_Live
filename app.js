@@ -93,6 +93,13 @@ const pack=o=>encodeURIComponent(JSON.stringify(o));
 const unpack=s=>{try{return JSON.parse(decodeURIComponent(s))}catch{return null}};
 function detailPayload(title,subtitle,rows=[]){return {title,subtitle,rows}}
 function detailRows(items,mapper){return items.map(mapper).slice(0,100)}
+function uniq(arr){return [...new Set(arr.filter(v=>v!=null&&String(v).trim()!==''))]}
+function compactList(arr,max=3){
+  const u=uniq(arr).map(String);
+  if(!u.length)return '—';
+  return u.length<=max?u.join(', '):`${u.slice(0,max).join(', ')} +${u.length-max} more`;
+}
+function hoverLine(label,value){return `<b>${esc(label)}:</b> ${esc(value)}`}
 function stat(label,value,foot){return `<div class="stat-chip"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></div>`}
 function title(t,s){return `<h2 class="section-title">${esc(t)}</h2><p class="section-sub">${esc(s)}</p>`}
 function bars(data,{value='value',count='count',color='#4F46E5',height=190,chart='chart',yTitle='Students'}={}){
@@ -117,9 +124,21 @@ function compute({sessions,turns},N){
 
   const q1=hist(first).map(bucket=>{
     const rows=asked.filter(s=>Math.round(num(s.first_code_request_after_questions))===bucket.value);
+    const studentsInBucket=uniq(rows.map(s=>String(s.student_id))).length;
+    const classesInBucket=compactList(rows.map(s=>s.class));
+    const weeksInBucket=compactList(rows.map(s=>`Week ${s.week}`));
+    const receivedInBucket=rows.filter(s=>bool(s.completion_code_received)).length;
     return {...bucket,
-      tooltip:`After ${bucket.value} question(s): ${bucket.count} student(s)`,
-      detail:detailPayload(`Code request after ${bucket.value} question(s)`,`${bucket.count} student(s) in this bucket`,detailRows(rows,s=>({
+      tooltip:`After ${bucket.value} question(s): ${studentsInBucket} student(s)`,
+      hoverHtml:[
+        `<b>Code request after ${bucket.value} question(s)</b>`,
+        hoverLine('Students',studentsInBucket),
+        hoverLine('Share of code-requesting students',`${pct(studentsInBucket,asked.length)}%`),
+        hoverLine('Class',classesInBucket),
+        hoverLine('Week',weeksInBucket),
+        hoverLine('Received code',`${receivedInBucket}/${rows.length}`)
+      ].join('<br>'),
+      detail:detailPayload(`Code request after ${bucket.value} question(s)`,`${studentsInBucket} student(s) in this bucket`,detailRows(rows,s=>({
         Student:s.student_id,Conversation:s.conversation_id,Week:s.week,Class:s.class,Received:bool(s.completion_code_received)?'Yes':'No'
       })))
     }
@@ -130,16 +149,33 @@ function compute({sessions,turns},N){
   const counts=[...nsMap.values()];
   const q2=hist(counts).map(bucket=>{
     const ids=[...nsMap.entries()].filter(([,c])=>c===bucket.value).map(([id])=>id);
+    const bucketSessions=sessions.filter(s=>ids.includes(String(s.student_id)));
     return {...bucket,
       tooltip:`${bucket.value} non-serious answer(s): ${bucket.count} student(s)`,
-      detail:detailPayload(`${bucket.value} non-serious answer(s)`,`${bucket.count} student(s)`,ids.map(id=>({Student:id,Examples:ns.filter(r=>String(r.student_id)===id).map(r=>String(r.student_answer||'').replace(/\s+/g,' ').trim()).filter(Boolean).slice(0,3).join(' · ')||'—'})))
+      hoverHtml:[
+        `<b>${bucket.value} non-serious answer(s)</b>`,
+        hoverLine('Students',bucket.count),
+        hoverLine('Share of students',`${pct(bucket.count,students.length)}%`),
+        hoverLine('Class',compactList(bucketSessions.map(s=>s.class))),
+        hoverLine('Week',compactList(bucketSessions.map(s=>`Week ${s.week}`))),
+        hoverLine('Student IDs',compactList(ids,4))
+      ].join('<br>'),
+      detail:detailPayload(`${bucket.value} non-serious answer(s)`,`${bucket.count} student(s)`,ids.map(id=>({Student:id,Class:compactList(sessions.filter(s=>String(s.student_id)===id).map(s=>s.class)),Week:compactList(sessions.filter(s=>String(s.student_id)===id).map(s=>`Week ${s.week}`)),Examples:ns.filter(r=>String(r.student_id)===id).map(r=>String(r.student_answer||'').replace(/\s+/g,' ').trim()).filter(Boolean).slice(0,3).join(' · ')||'—'})))
     }
   });
   const rank=[...nsMap.entries()].filter(([,c])=>c>0).sort((a,b)=>b[1]-a[1]).map(([student_id,count])=>{
     const rows=ns.filter(r=>String(r.student_id)===student_id);
+    const studentSessions=sessions.filter(s=>String(s.student_id)===student_id);
     return {student_id,count,
       tooltip:`Student ${student_id}: ${count} non-serious answer(s)`,
-      detail:detailPayload(`Student ${student_id}`,`${count} non-serious answer(s)`,detailRows(rows,r=>({Week:r.week,Conversation:r.conversation_id,Answer:String(r.student_answer||'').replace(/\s+/g,' ').trim(),Question:r.assistant_question||'—'})))
+      hoverHtml:[
+        `<b>Student ${esc(student_id)}</b>`,
+        hoverLine('Non-serious answers',count),
+        hoverLine('Class',compactList(studentSessions.map(s=>s.class))),
+        hoverLine('Week',compactList(studentSessions.map(s=>`Week ${s.week}`))),
+        hoverLine('Conversations',compactList(studentSessions.map(s=>s.conversation_id),3))
+      ].join('<br>'),
+      detail:detailPayload(`Student ${student_id}`,`${count} non-serious answer(s)`,detailRows(rows,r=>({Week:r.week,Class:r.class||compactList(studentSessions.map(s=>s.class)),Conversation:r.conversation_id,Answer:String(r.student_answer||'').replace(/\s+/g,' ').trim(),Question:r.assistant_question||'—'})))
     }
   });
 
@@ -152,9 +188,19 @@ function compute({sessions,turns},N){
   const classified=Object.values(res).reduce((a,b)=>a+b,0);
   const resultBars=['Incorrect','Partially correct','Correct'].map(label=>{
     const rows=ans.filter(r=>r.answer_result===label);
+    const rowSessions=sessions.filter(s=>rows.some(r=>String(r.conversation_id)===String(s.conversation_id)&&Number(r.week)===Number(s.week)));
     return {label,count:rows.length,
       tooltip:`${label}: ${rows.length} answer(s) · ${pct(rows.length,classified)}%`,
-      detail:detailPayload(label,`${rows.length} classified answer(s)`,detailRows(rows,r=>({Student:r.student_id,Conversation:r.conversation_id,Week:r.week,Type:r.question_type||'—',Question:r.assistant_question||'—',Answer:r.student_answer||'—'})))
+      hoverHtml:[
+        `<b>${esc(label)}</b>`,
+        hoverLine('Answers',rows.length),
+        hoverLine('Share of classified answers',`${pct(rows.length,classified)}%`),
+        hoverLine('Students',uniq(rows.map(r=>String(r.student_id))).length),
+        hoverLine('Class',compactList(rowSessions.map(s=>s.class))),
+        hoverLine('Week',compactList(rows.map(r=>`Week ${r.week}`))),
+        hoverLine('Question type',compactList(rows.map(r=>r.question_type||'—')))
+      ].join('<br>'),
+      detail:detailPayload(label,`${rows.length} classified answer(s)`,detailRows(rows,r=>({Student:r.student_id,Conversation:r.conversation_id,Week:r.week,Class:compactList(sessions.filter(s=>String(s.conversation_id)===String(r.conversation_id)&&Number(s.week)===Number(r.week)).map(s=>s.class)),Type:r.question_type||'—',Question:r.assistant_question||'—',Answer:r.student_answer||'—'})))
     }
   });
 
@@ -170,6 +216,14 @@ function compute({sessions,turns},N){
     const rows=sessions.filter(s=>convs.includes(String(s.conversation_id)));
     return {...bucket,
       tooltip:`${bucket.value} follow-up question(s): ${bucket.count} session(s)`,
+      hoverHtml:[
+        `<b>${bucket.value} follow-up question(s)</b>`,
+        hoverLine('Sessions',bucket.count),
+        hoverLine('Students',uniq(rows.map(s=>String(s.student_id))).length),
+        hoverLine('Class',compactList(rows.map(s=>s.class))),
+        hoverLine('Week',compactList(rows.map(s=>`Week ${s.week}`))),
+        hoverLine('Share of sessions',`${pct(bucket.count,sessions.length)}%`)
+      ].join('<br>'),
       detail:detailPayload(`${bucket.value} follow-up question(s)`,`${bucket.count} session(s)`,detailRows(rows,s=>({Student:s.student_id,Conversation:s.conversation_id,Week:s.week,Class:s.class})))
     }
   });
@@ -178,8 +232,17 @@ function compute({sessions,turns},N){
     const rows=ans.filter(r=>r.question_type===label&&['Correct','Partially correct','Incorrect'].includes(r.answer_result));
     const bad=rows.filter(r=>r.answer_result==='Incorrect');
     const incorrect=bad.length;
+    const badSessions=sessions.filter(s=>bad.some(r=>String(r.conversation_id)===String(s.conversation_id)&&Number(r.week)===Number(s.week)));
     return {label,attempts:rows.length,incorrect,rate:rows.length?100*incorrect/rows.length:0,
-      detail:detailPayload(`${label} questions`,`${incorrect} incorrect / ${rows.length} attempts`,detailRows(bad,r=>({Student:r.student_id,Conversation:r.conversation_id,Week:r.week,Question:r.assistant_question||'—',Answer:r.student_answer||'—'})))
+      hoverHtml:[
+        `<b>${esc(label)} questions</b>`,
+        hoverLine('Incorrect rate',`${Math.round(rows.length?100*incorrect/rows.length:0)}%`),
+        hoverLine('Incorrect / attempts',`${incorrect}/${rows.length}`),
+        hoverLine('Students with incorrect answers',uniq(bad.map(r=>String(r.student_id))).length),
+        hoverLine('Class',compactList(badSessions.map(s=>s.class))),
+        hoverLine('Week',compactList(bad.map(r=>`Week ${r.week}`)))
+      ].join('<br>'),
+      detail:detailPayload(`${label} questions`,`${incorrect} incorrect / ${rows.length} attempts`,detailRows(bad,r=>({Student:r.student_id,Conversation:r.conversation_id,Week:r.week,Class:compactList(sessions.filter(s=>String(s.conversation_id)===String(r.conversation_id)&&Number(s.week)===Number(r.week)).map(s=>s.class)),Question:r.assistant_question||'—',Answer:r.student_answer||'—'})))
     }
   }).filter(x=>x.attempts);
 
@@ -195,7 +258,7 @@ function compute({sessions,turns},N){
 
   return {studentsTotal:students.length,askedStudents:new Set(asked.map(s=>String(s.student_id))).size,medianFirst:median(first),earlyN:first.filter(x=>x<=2).length,earlyPct:pct(first.filter(x=>x<=2).length,first.length),q1,q2,rank,counts,words,maxWord:Math.max(1,...words.map(x=>x.count)),results:res,resultBars,classified,follow,avgFollow:fv.length?fv.reduce((a,b)=>a+b,0)/fv.length:0,q4,q5:{ea:groups.ea.length,na:groups.na.length,en:groups.en.length,nn:groups.nn.length,total,eap:pct(groups.ea.length,total),nap:pct(groups.na.length,total),enp:pct(groups.en.length,total),nnp:pct(groups.nn.length,total),details:{ea:groupDetail('ea','Asked code + enough work'),na:groupDetail('na','Asked code + not enough work'),en:groupDetail('en','Did not ask + enough work'),nn:groupDetail('nn','Did not ask + not enough work')}}}
 }
-function dashboard(){const m=compute(filtered(),state.N),worst=m.q4.length?[...m.q4].sort((a,b)=>b.rate-a.rate)[0]:null;return `<div class="content"><div class="grid two"><section class="card">${title('1. How many questions has the chatbot asked when the student asks for the code?','Distribution of when students first ask for the completion code. Hover over a bar for context.')}${bars(m.q1,{height:230,chart:'code-request-timing',yTitle:'Students'})}<div class="stat-row">${stat('Asked',m.askedStudents,`of ${m.studentsTotal} students`)}${stat('Median',Number.isFinite(m.medianFirst)?Math.round(m.medianFirst):'—','questions · supplementary')}${stat('Early',m.earlyN,`≤2 · ${m.earlyPct}%`)}</div>${m.earlyN?`<div class="attn red"><b>${m.earlyN} students</b>&nbsp;requested the code within the first two questions.</div>`:''}</section><section class="card">${title('2. How many non-serious answers has the student made?','Distribution per student, ranked cases, and a compact word cloud.')}<div class="split"><div><div class="eyebrow">A · Distribution per student</div>${bars(m.q2,{color:'#D97706',height:170,chart:'non-serious-distribution',yTitle:'Students'})}</div><div><div class="eyebrow">B · Ranked non-serious counts</div>${ranked(m.rank)}</div></div><div class="eyebrow word-label">Overview · words used in non-serious answers</div><div class="word-cloud">${m.words.length?m.words.map((w,i)=>`<button type="button" class="word-hit chart-hit" data-tooltip="${esc(`${w.word}: ${w.count} occurrence(s)`)}" data-detail="${pack(detailPayload(`Word: ${w.word}`,`${w.count} occurrence(s) in non-serious answers`,[]))}" style="font-size:${12+18*w.count/m.maxWord}px;font-weight:${w.count>=m.maxWord*.6?800:600};color:${i%3?'#4F46E5':'#64748B'}">${esc(w.word)}</button>`).join(''):'<span class="muted">No usable words available.</span>'}</div><div class="stat-row">${stat('Students',m.counts.length,'in current filter')}${stat('With non-serious',m.counts.filter(x=>x>0).length,'students')}${stat('Non-serious answers',m.counts.reduce((a,b)=>a+b,0),'total')}</div></section></div><div class="grid two"><section class="card">${title('3. How many answers are incorrect or partially correct, and how many follow-up questions were asked?','Answer-result distribution and follow-up-question count per session.')}${bars(m.resultBars,{value:'label',height:180,chart:'answer-results',yTitle:'Answers'})}<div class="eyebrow">Follow-up questions per session</div>${bars(m.follow,{height:155,chart:'follow-ups',yTitle:'Sessions'})}<div class="stat-row">${stat('Incorrect',m.results.Incorrect,`${pct(m.results.Incorrect,m.classified)}%`)}${stat('Partial',m.results['Partially correct'],`${pct(m.results['Partially correct'],m.classified)}%`)}${stat('Avg follow-ups',m.avgFollow.toFixed(1),'per session · supplementary')}</div></section><section class="card">${title('4. Are the incorrectly answered questions coding or conceptual?','Combined count and percentage: each label reports the incorrect rate and raw number of incorrect answers.')}${m.q4.length?rateBars(m.q4):'<div class="empty">No classified coding/conceptual attempts available.</div>'}${m.q4.length?`<div class="stat-row">${m.q4.map(x=>stat(x.label,`${Math.round(x.rate)}%`,`${x.incorrect} incorrect / ${x.attempts} attempts`)).join('')}</div><div class="attn"><b>${esc(worst.label)}</b>&nbsp;has the higher incorrect rate (${Math.round(worst.rate)}%).</div>`:''}</section></div><div class="group-label">Enrollment completion</div><section class="card">${title('5. Among students who did not get the completion code: did they ask for it, and did they do enough work (N answers)?','2×2 matrix: asked vs did not ask × enough vs not enough work. The instructor sets N.')}<label class="slider-label">Minimum answers to count as “enough work” (N)<div class="slider-row"><input id="n-slider" type="range" min="1" max="10" step="1" value="${state.N}"><strong>${state.N}</strong></div></label><div class="matrix"><div></div><div class="head">Enough work<br>≥ ${state.N}</div><div class="head">Not enough<br>&lt; ${state.N}</div><div class="rowhead">Asked code</div><button type="button" class="bluecell matrix-hit chart-hit" data-tooltip="Asked + enough: ${m.q5.ea} (${m.q5.eap}%)" data-detail="${pack(m.q5.details.ea)}"><span>${m.q5.ea}</span><br>${m.q5.eap}%</button><button type="button" class="warmcell matrix-hit chart-hit" data-tooltip="Asked + not enough: ${m.q5.na} (${m.q5.nap}%)" data-detail="${pack(m.q5.details.na)}"><span>${m.q5.na}</span><br>${m.q5.nap}%</button><div class="rowhead">Did not ask</div><button type="button" class="bluecell matrix-hit chart-hit" data-tooltip="Did not ask + enough: ${m.q5.en} (${m.q5.enp}%)" data-detail="${pack(m.q5.details.en)}"><span>${m.q5.en}</span><br>${m.q5.enp}%</button><button type="button" class="warmcell matrix-hit chart-hit" data-tooltip="Did not ask + not enough: ${m.q5.nn} (${m.q5.nnp}%)" data-detail="${pack(m.q5.details.nn)}"><span>${m.q5.nn}</span><br>${m.q5.nnp}%</button></div><div class="matrix-note">Total: ${m.q5.total} students who did not receive the code</div><div class="stat-row">${stat('Asked + enough',m.q5.ea,`${m.q5.eap}% of no-code students`)}${stat('Asked + not enough',m.q5.na,`${m.q5.nap}%`)}${stat('Did not ask + enough',m.q5.en,`${m.q5.enp}%`)}${stat('Did not ask + not enough',m.q5.nn,`${m.q5.nnp}%`)}</div>${m.q5.na?`<div class="attn red"><b>${m.q5.na} no-code student(s)</b>&nbsp;asked for the code without reaching N=${state.N} answers.</div>`:''}</section></div>`}
+function dashboard(){const m=compute(filtered(),state.N),worst=m.q4.length?[...m.q4].sort((a,b)=>b.rate-a.rate)[0]:null;return `<div class="content"><div class="grid two"><section class="card">${title('1. How many questions has the chatbot asked when the student asks for the code?','Distribution of when students first ask for the completion code. Hover over a bar for context.')}${bars(m.q1,{height:230,chart:'code-request-timing',yTitle:'Students'})}<div class="stat-row">${stat('Asked',m.askedStudents,`of ${m.studentsTotal} students`)}${stat('Median',Number.isFinite(m.medianFirst)?Math.round(m.medianFirst):'—','questions · supplementary')}${stat('Early',m.earlyN,`≤2 · ${m.earlyPct}%`)}</div>${m.earlyN?`<div class="attn red"><b>${m.earlyN} students</b>&nbsp;requested the code within the first two questions.</div>`:''}</section><section class="card">${title('2. How many non-serious answers has the student made?','Distribution per student, ranked cases, and a compact word cloud.')}<div class="split"><div><div class="eyebrow">A · Distribution per student</div>${bars(m.q2,{color:'#D97706',height:170,chart:'non-serious-distribution',yTitle:'Students'})}</div><div><div class="eyebrow">B · Ranked non-serious counts</div>${ranked(m.rank)}</div></div><div class="eyebrow word-label">Overview · words used in non-serious answers</div><div class="word-cloud">${m.words.length?m.words.map((w,i)=>`<button type="button" class="word-hit chart-hit" data-tooltip="${esc(`${w.word}: ${w.count} occurrence(s)`)}" data-detail="${pack(detailPayload(`Word: ${w.word}`,`${w.count} occurrence(s) in non-serious answers`,[]))}" style="font-size:${12+18*w.count/m.maxWord}px;font-weight:${w.count>=m.maxWord*.6?800:600};color:${i%3?'#4F46E5':'#64748B'}">${esc(w.word)}</button>`).join(''):'<span class="muted">No usable words available.</span>'}</div><div class="stat-row">${stat('Students',m.counts.length,'in current filter')}${stat('With non-serious',m.counts.filter(x=>x>0).length,'students')}${stat('Non-serious answers',m.counts.reduce((a,b)=>a+b,0),'total')}</div></section></div><div class="grid two"><section class="card">${title('3. How many answers are incorrect or partially correct, and how many follow-up questions were asked?','Answer-result distribution and follow-up-question count per session.')}${bars(m.resultBars,{value:'label',height:180,chart:'answer-results',yTitle:'Answers'})}<div class="eyebrow">Follow-up questions per session</div>${bars(m.follow,{height:155,chart:'follow-ups',yTitle:'Sessions'})}<div class="stat-row">${stat('Incorrect',m.results.Incorrect,`${pct(m.results.Incorrect,m.classified)}%`)}${stat('Partial',m.results['Partially correct'],`${pct(m.results['Partially correct'],m.classified)}%`)}${stat('Avg follow-ups',m.avgFollow.toFixed(1),'per session · supplementary')}</div></section><section class="card">${title('4. Are the incorrectly answered questions coding or conceptual?','Combined count and percentage: each label reports the incorrect rate and raw number of incorrect answers.')}${m.q4.length?rateBars(m.q4):'<div class="empty">No classified coding/conceptual attempts available.</div>'}${m.q4.length?`<div class="stat-row">${m.q4.map(x=>stat(x.label,`${Math.round(x.rate)}%`,`${x.incorrect} incorrect / ${x.attempts} attempts`)).join('')}</div>`:''}</section></div><div class="group-label">Enrollment completion</div><section class="card">${title('5. Among students who did not get the completion code: did they ask for it, and did they do enough work (N answers)?','2×2 matrix: asked vs did not ask × enough vs not enough work. The instructor sets N.')}<label class="slider-label">Minimum answers to count as “enough work” (N)<div class="slider-row"><input id="n-slider" type="range" min="1" max="10" step="1" value="${state.N}"><strong>${state.N}</strong></div></label><div class="matrix"><div></div><div class="head">Enough work<br>≥ ${state.N}</div><div class="head">Not enough<br>&lt; ${state.N}</div><div class="rowhead">Asked code</div><button type="button" class="bluecell matrix-hit chart-hit" data-tooltip="Asked + enough: ${m.q5.ea} (${m.q5.eap}%)" data-detail="${pack(m.q5.details.ea)}"><span>${m.q5.ea}</span><br>${m.q5.eap}%</button><button type="button" class="warmcell matrix-hit chart-hit" data-tooltip="Asked + not enough: ${m.q5.na} (${m.q5.nap}%)" data-detail="${pack(m.q5.details.na)}"><span>${m.q5.na}</span><br>${m.q5.nap}%</button><div class="rowhead">Did not ask</div><button type="button" class="bluecell matrix-hit chart-hit" data-tooltip="Did not ask + enough: ${m.q5.en} (${m.q5.enp}%)" data-detail="${pack(m.q5.details.en)}"><span>${m.q5.en}</span><br>${m.q5.enp}%</button><button type="button" class="warmcell matrix-hit chart-hit" data-tooltip="Did not ask + not enough: ${m.q5.nn} (${m.q5.nnp}%)" data-detail="${pack(m.q5.details.nn)}"><span>${m.q5.nn}</span><br>${m.q5.nnp}%</button></div><div class="matrix-note">Total: ${m.q5.total} students who did not receive the code</div><div class="stat-row">${stat('Asked + enough',m.q5.ea,`${m.q5.eap}% of no-code students`)}${stat('Asked + not enough',m.q5.na,`${m.q5.nap}%`)}${stat('Did not ask + enough',m.q5.en,`${m.q5.enp}%`)}${stat('Did not ask + not enough',m.q5.nn,`${m.q5.nnp}%`)}</div>${m.q5.na?`<div class="attn red"><b>${m.q5.na} no-code student(s)</b>&nbsp;asked for the code without reaching N=${state.N} answers.</div>`:''}</section></div>`}
 function inspector(){const d=state.data;return `<div class="content"><div class="group-label">Processed data & validation</div><section class="card">${title('Processed data inspector','Review the exported live dataset and download the complete processed workbook.')}<div class="stat-row">${stat('Sessions',d.meta.session_count,'processed')}${stat('Turns',d.meta.turn_count,'turn-level rows')}${stat('Requests',d.meta.request_event_count,'code request events')}</div><a class="download-btn" href="/latest_processed_analysis.xlsx" download>↓ Download complete workbook</a><div class="validation-table"><div class="tr th"><span>Check</span><span>Status</span><span>Severity</span><span>Detail</span></div>${(d.validation||[]).map(r=>`<div class="tr"><span>${esc(r.check)}</span><span class="${r.status==='PASS'?'good':'bad'}">${esc(r.status)}</span><span>${esc(r.severity)}</span><span>${esc(r.detail)}</span></div>`).join('')}</div></section></div>`}
 function render(){const d=state.data;if(!d)return;Object.keys(plotRegistry).forEach(k=>delete plotRegistry[k]);const weeks=d.meta.weeks||[],classes=d.meta.classes||[];app.innerHTML=`<div class="app-shell ${state.sidebarCollapsed?'sidebar-collapsed':''}"><aside class="sidebar ${state.nav?'open':''}"><div class="side-brand"><div class="app-badge">CA</div><div class="side-brand-copy"><strong>Conversational<br>Assessment</strong><span>Analytics</span></div><button class="sidebar-collapse" id="collapse-sidebar" title="Hide sidebar" aria-label="Hide sidebar">‹</button><button class="nav-close" id="close-nav" aria-label="Close menu">✕</button></div><nav><button id="nav-dashboard" class="${state.page==='Dashboard'?'active':''}">▦ Dashboard</button><button id="nav-inspector" class="${state.page==='Processed data & validation'?'active':''}">▤ Processed data & validation</button></nav><section class="upload-panel"><div class="upload-title">Spreadsheet data</div><div class="upload-source">${esc(state.sourceLabel)}</div><label class="upload-btn">Upload Excel file(s)<input id="sheet-upload" type="file" accept=".xlsx,.xls" multiple></label>${state.uploaded?'<button type="button" id="reset-data" class="reset-data">Use bundled data</button>':''}${state.uploadStatus?`<div class="upload-status">${esc(state.uploadStatus)}</div>`:''}</section></aside><main class="main"><header class="fixed-header"><div class="header-inner"><button class="menu-btn" id="menu-btn" title="Show sidebar" aria-label="Show sidebar">☰</button><div class="title-wrap"><div class="app-badge">CA</div><div><div class="dashboard-title">Conversational Assessment Analytics</div><div class="dashboard-sub">${state.week==='All weeks'?'All weeks':`Week ${state.week}`} · ${esc(state.klass)} · evidence for the five instructor questions</div></div></div><div class="filters"><label>Week<select id="week-select"><option>All weeks</option>${weeks.map(w=>`<option value="${w}" ${String(state.week)===String(w)?'selected':''}>Week ${w}</option>`).join('')}</select></label><label>Class<select id="class-select"><option>All classes</option>${classes.map(c=>`<option ${state.klass===c?'selected':''}>${esc(c)}</option>`).join('')}</select></label></div></div></header><div class="header-space"></div>${state.page==='Dashboard'?dashboard():inspector()}</main><div id="chart-tooltip" class="chart-tooltip" role="tooltip"></div><div id="detail-backdrop" class="detail-backdrop"></div><aside id="detail-drawer" class="detail-drawer" aria-hidden="true"><div class="detail-drawer-head"><div><div class="eyebrow">Chart details</div><h3 id="detail-title"></h3><p id="detail-subtitle"></p></div><button type="button" id="detail-close" class="detail-close" aria-label="Close details">✕</button></div><div id="detail-body" class="detail-body"></div></aside></div>`;bind();hydratePlotlyCharts()}
 function openDetail(detail,source){
@@ -269,7 +332,7 @@ async function hydratePlotlyCharts(){
         textposition:'outside',
         textfont:{color:'#475569',size:11},
         cliponaxis:false,
-        hovertemplate:data.map((d,i)=>`${esc(d.tooltip||`${x[i]}: ${y[i]}`)}<extra></extra>`)
+        hovertemplate:data.map((d,i)=>`${d.hoverHtml||esc(d.tooltip||`${x[i]}: ${y[i]}`)}<extra></extra>`)
       }];
       layout={...layout,
         bargap:.28,
@@ -313,7 +376,7 @@ async function hydratePlotlyCharts(){
         },
         customdata:rows.map(d=>d.detail||null),
         hovertemplate:rows.map(
-          d=>`${esc(d.tooltip||`Student ${d.student_id}: ${d.count} non-serious answer${Number(d.count)===1?'':'s'}`)}<extra></extra>`
+          d=>`${d.hoverHtml||esc(d.tooltip||`Student ${d.student_id}: ${d.count} non-serious answer${Number(d.count)===1?'':'s'}`)}<extra></extra>`
         )
       }];
 
@@ -367,7 +430,7 @@ async function hydratePlotlyCharts(){
         text:rows.map(d=>`${Math.round(d.rate)}%`),
         textposition:'outside',
         cliponaxis:false,
-        hovertemplate:rows.map(d=>`${esc(`${d.label}: ${Math.round(d.rate)}% incorrect · ${d.incorrect}/${d.attempts}`)}<extra></extra>`)
+        hovertemplate:rows.map(d=>`${d.hoverHtml||esc(`${d.label}: ${Math.round(d.rate)}% incorrect · ${d.incorrect}/${d.attempts}`)}<extra></extra>`)
       }];
       layout={...layout,
         margin:{l:90,r:35,t:12,b:38},
