@@ -1,12 +1,6 @@
-import {combinePayloads,processedWorkbookPayload,rawWorkbookPayload} from './processor.js';
-
 const app=document.getElementById('app');
 const state={
   data:null,
-  bundledData:null,
-  sourceLabel:'Bundled dashboard data',
-  uploadStatus:'',
-  uploaded:false,
   page:'Dashboard',
   week:'All weeks',
   klass:'All classes',
@@ -16,7 +10,6 @@ const state={
 };
 const plotRegistry={};
 let plotlyPromise=null;
-let xlsxPromise=null;
 
 function loadPlotly(){
   if(window.Plotly)return Promise.resolve(window.Plotly);
@@ -30,52 +23,6 @@ function loadPlotly(){
     document.head.appendChild(s);
   });
   return plotlyPromise;
-}
-
-function loadXlsx(){
-  if(window.XLSX)return Promise.resolve(window.XLSX);
-  if(xlsxPromise)return xlsxPromise;
-  xlsxPromise=new Promise((resolve,reject)=>{
-    const s=document.createElement('script');
-    s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
-    s.async=true;
-    s.onload=()=>resolve(window.XLSX);
-    s.onerror=()=>reject(new Error('Could not load the spreadsheet reader. Check your internet connection and try again.'));
-    document.head.appendChild(s);
-  });
-  return xlsxPromise;
-}
-
-async function processSpreadsheetFiles(fileList){
-  const files=[...fileList];
-  if(!files.length)return;
-  state.uploadStatus=`Reading ${files.length} spreadsheet${files.length===1?'':'s'}…`;
-  render();
-  try{
-    const XLSX=await loadXlsx();
-    let incoming=null;
-    let containsProcessedWorkbook=false;
-    for(const file of files){
-      const workbook=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true});
-      let payload=processedWorkbookPayload(XLSX,workbook);
-      if(payload){
-        containsProcessedWorkbook=true;
-      }else{
-        payload=rawWorkbookPayload(XLSX,workbook,file.name);
-      }
-      incoming=incoming?combinePayloads(incoming,payload,{replaceWeeks:true}):payload;
-    }
-    state.data=containsProcessedWorkbook?incoming:combinePayloads(state.bundledData,incoming,{replaceWeeks:true});
-    state.sourceLabel=containsProcessedWorkbook?(files.length===1?files[0].name:`${files.length} uploaded workbooks`):`${files.length} uploaded week${files.length===1?'':'s'} + bundled data`;
-    state.uploadStatus=`Ready · ${state.data.meta.session_count} sessions`;
-    state.uploaded=true;
-    state.week='All weeks';
-    state.klass='All classes';
-    render();
-  }catch(error){
-    state.uploadStatus=error?.message||'The spreadsheet could not be processed.';
-    render();
-  }
 }
 
 function registerPlot(kind,data,opts={}){
@@ -102,9 +49,9 @@ function compactList(arr,max=3){
 function hoverLine(label,value){return `<b>${esc(label)}:</b> ${esc(value)}`}
 function stat(label,value,foot){return `<div class="stat-chip"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></div>`}
 function title(t,s){return `<h2 class="section-title">${esc(t)}</h2><p class="section-sub">${esc(s)}</p>`}
-function bars(data,{value='value',count='count',color='#4F46E5',height=190,chart='chart',yTitle='Students'}={}){
+function bars(data,{value='value',count='count',color='#4F46E5',height=190,chart='chart',xTitle='',yTitle='Students'}={}){
   if(!data.length)return `<div class="empty">No data available.</div>`;
-  return registerPlot('bar',data,{value,count,color,height,chart,yTitle});
+  return registerPlot('bar',data,{value,count,color,height,chart,xTitle,yTitle});
 }
 function ranked(data){
   if(!data.length)return `<div class="empty">No non-serious answers detected.</div>`;
@@ -258,9 +205,9 @@ function compute({sessions,turns},N){
 
   return {studentsTotal:students.length,askedStudents:new Set(asked.map(s=>String(s.student_id))).size,medianFirst:median(first),earlyN:first.filter(x=>x<=2).length,earlyPct:pct(first.filter(x=>x<=2).length,first.length),q1,q2,rank,counts,words,maxWord:Math.max(1,...words.map(x=>x.count)),results:res,resultBars,classified,follow,avgFollow:fv.length?fv.reduce((a,b)=>a+b,0)/fv.length:0,q4,q5:{ea:groups.ea.length,na:groups.na.length,en:groups.en.length,nn:groups.nn.length,total,eap:pct(groups.ea.length,total),nap:pct(groups.na.length,total),enp:pct(groups.en.length,total),nnp:pct(groups.nn.length,total),details:{ea:groupDetail('ea','Asked code + enough work'),na:groupDetail('na','Asked code + not enough work'),en:groupDetail('en','Did not ask + enough work'),nn:groupDetail('nn','Did not ask + not enough work')}}}
 }
-function dashboard(){const m=compute(filtered(),state.N),worst=m.q4.length?[...m.q4].sort((a,b)=>b.rate-a.rate)[0]:null;return `<div class="content"><div class="grid two"><section class="card">${title('1. How many questions has the chatbot asked when the student asks for the code?','Distribution of when students first ask for the completion code. Hover over a bar for context.')}${bars(m.q1,{height:230,chart:'code-request-timing',yTitle:'Students'})}<div class="stat-row">${stat('Asked',m.askedStudents,`of ${m.studentsTotal} students`)}${stat('Median',Number.isFinite(m.medianFirst)?Math.round(m.medianFirst):'—','questions · supplementary')}${stat('Early',m.earlyN,`≤2 · ${m.earlyPct}%`)}</div>${m.earlyN?`<div class="attn red"><b>${m.earlyN} students</b>&nbsp;requested the code within the first two questions.</div>`:''}</section><section class="card">${title('2. How many non-serious answers has the student made?','Distribution per student, ranked cases, and a compact word cloud.')}<div class="split"><div><div class="eyebrow">A · Distribution per student</div>${bars(m.q2,{color:'#D97706',height:170,chart:'non-serious-distribution',yTitle:'Students'})}</div><div><div class="eyebrow">B · Ranked non-serious counts</div>${ranked(m.rank)}</div></div><div class="eyebrow word-label">Overview · words used in non-serious answers</div><div class="word-cloud">${m.words.length?m.words.map((w,i)=>`<button type="button" class="word-hit chart-hit" data-tooltip="${esc(`${w.word}: ${w.count} occurrence(s)`)}" data-detail="${pack(detailPayload(`Word: ${w.word}`,`${w.count} occurrence(s) in non-serious answers`,[]))}" style="font-size:${12+18*w.count/m.maxWord}px;font-weight:${w.count>=m.maxWord*.6?800:600};color:${i%3?'#4F46E5':'#64748B'}">${esc(w.word)}</button>`).join(''):'<span class="muted">No usable words available.</span>'}</div><div class="stat-row">${stat('Students',m.counts.length,'in current filter')}${stat('With non-serious',m.counts.filter(x=>x>0).length,'students')}${stat('Non-serious answers',m.counts.reduce((a,b)=>a+b,0),'total')}</div></section></div><div class="grid two"><section class="card">${title('3. How many answers are incorrect or partially correct, and how many follow-up questions were asked?','Answer-result distribution and follow-up-question count per session.')}${bars(m.resultBars,{value:'label',height:180,chart:'answer-results',yTitle:'Answers'})}<div class="eyebrow">Follow-up questions per session</div>${bars(m.follow,{height:155,chart:'follow-ups',yTitle:'Sessions'})}<div class="stat-row">${stat('Incorrect',m.results.Incorrect,`${pct(m.results.Incorrect,m.classified)}%`)}${stat('Partial',m.results['Partially correct'],`${pct(m.results['Partially correct'],m.classified)}%`)}${stat('Avg follow-ups',m.avgFollow.toFixed(1),'per session · supplementary')}</div></section><section class="card">${title('4. Are the incorrectly answered questions coding or conceptual?','Combined count and percentage: each label reports the incorrect rate and raw number of incorrect answers.')}${m.q4.length?rateBars(m.q4):'<div class="empty">No classified coding/conceptual attempts available.</div>'}${m.q4.length?`<div class="stat-row">${m.q4.map(x=>stat(x.label,`${Math.round(x.rate)}%`,`${x.incorrect} incorrect / ${x.attempts} attempts`)).join('')}</div>`:''}</section></div><div class="group-label">Enrollment completion</div><section class="card">${title('5. Among students who did not get the completion code: did they ask for it, and did they do enough work (N answers)?','2×2 matrix: asked vs did not ask × enough vs not enough work. The instructor sets N.')}<label class="slider-label">Minimum answers to count as “enough work” (N)<div class="slider-row"><input id="n-slider" type="range" min="1" max="10" step="1" value="${state.N}"><strong>${state.N}</strong></div></label><div class="matrix"><div></div><div class="head">Enough work<br>≥ ${state.N}</div><div class="head">Not enough<br>&lt; ${state.N}</div><div class="rowhead">Asked code</div><button type="button" class="bluecell matrix-hit chart-hit" data-tooltip="Asked + enough: ${m.q5.ea} (${m.q5.eap}%)" data-detail="${pack(m.q5.details.ea)}"><span>${m.q5.ea}</span><br>${m.q5.eap}%</button><button type="button" class="warmcell matrix-hit chart-hit" data-tooltip="Asked + not enough: ${m.q5.na} (${m.q5.nap}%)" data-detail="${pack(m.q5.details.na)}"><span>${m.q5.na}</span><br>${m.q5.nap}%</button><div class="rowhead">Did not ask</div><button type="button" class="bluecell matrix-hit chart-hit" data-tooltip="Did not ask + enough: ${m.q5.en} (${m.q5.enp}%)" data-detail="${pack(m.q5.details.en)}"><span>${m.q5.en}</span><br>${m.q5.enp}%</button><button type="button" class="warmcell matrix-hit chart-hit" data-tooltip="Did not ask + not enough: ${m.q5.nn} (${m.q5.nnp}%)" data-detail="${pack(m.q5.details.nn)}"><span>${m.q5.nn}</span><br>${m.q5.nnp}%</button></div><div class="matrix-note">Total: ${m.q5.total} students who did not receive the code</div><div class="stat-row">${stat('Asked + enough',m.q5.ea,`${m.q5.eap}% of no-code students`)}${stat('Asked + not enough',m.q5.na,`${m.q5.nap}%`)}${stat('Did not ask + enough',m.q5.en,`${m.q5.enp}%`)}${stat('Did not ask + not enough',m.q5.nn,`${m.q5.nnp}%`)}</div>${m.q5.na?`<div class="attn red"><b>${m.q5.na} no-code student(s)</b>&nbsp;asked for the code without reaching N=${state.N} answers.</div>`:''}</section></div>`}
+function dashboard(){const m=compute(filtered(),state.N);return `<div class="content"><div class="grid two"><section class="card">${title('1. How many questions has the chatbot asked when the student asks for the code?','Distribution of when students first ask for the completion code. Hover for a concise summary; click a bar for student/session details.')}${bars(m.q1,{height:230,chart:'code-request-timing',xTitle:'Questions before first code request',yTitle:'Students'})}</section><section class="card">${title('2. How many non-serious answers has the student made?','Distribution per student, ranked cases, and words used in non-serious answers.')}<div class="split"><div><div class="eyebrow">A · Distribution per student</div>${bars(m.q2,{color:'#D97706',height:170,chart:'non-serious-distribution',xTitle:'Non-serious answers per student',yTitle:'Students'})}</div><div><div class="eyebrow">B · Ranked non-serious counts</div>${ranked(m.rank)}</div></div><div class="eyebrow word-label">Overview · words used in non-serious answers</div><div class="word-cloud">${m.words.length?m.words.map((w,i)=>`<button type="button" class="word-hit chart-hit" data-tooltip="${esc(`${w.word}: ${w.count} occurrence(s)`)}" data-detail="${pack(detailPayload(`Word: ${w.word}`,`${w.count} occurrence(s) in non-serious answers`,[]))}" style="font-size:${12+18*w.count/m.maxWord}px;font-weight:${w.count>=m.maxWord*.6?800:600};color:${i%3?'#4F46E5':'#64748B'}">${esc(w.word)}</button>`).join(''):'<span class="muted">No usable words available.</span>'}</div></section></div><div class="grid two"><section class="card">${title('3. How many answers are incorrect or partially correct, and how many follow-up questions were asked?','Answer results and follow-up questions per session.')}${bars(m.resultBars,{value:'label',height:180,chart:'answer-results',xTitle:'Answer result',yTitle:'Answers'})}<div class="eyebrow">Follow-up questions per session</div>${bars(m.follow,{height:155,chart:'follow-ups',xTitle:'Follow-up questions',yTitle:'Sessions'})}</section><section class="card">${title('4. Are the incorrectly answered questions coding or conceptual?','Incorrect rate by question type.')}${m.q4.length?rateBars(m.q4):'<div class="empty">No classified coding/conceptual attempts available.</div>'}${m.q4.length?`<div class="stat-row">${m.q4.map(x=>stat(x.label,`${x.incorrect} incorrect`,`${x.attempts} attempts`)).join('')}</div>`:''}</section></div><div class="group-label">Enrollment completion</div><section class="card">${title('5. Among students who did not get the completion code: did they ask for it, and did they do enough work (N answers)?','2×2 matrix: asked vs did not ask × enough vs not enough work. The instructor sets N.')}<label class="slider-label">Minimum answers to count as “enough work” (N)<div class="slider-row"><input id="n-slider" type="range" min="1" max="10" step="1" value="${state.N}"><strong>${state.N}</strong></div></label><div class="matrix"><div></div><div class="head">Enough work<br>≥ ${state.N}</div><div class="head">Not enough<br>&lt; ${state.N}</div><div class="rowhead">Asked code</div><button type="button" class="bluecell matrix-hit chart-hit" data-tooltip="Asked + enough: ${m.q5.ea} (${m.q5.eap}%)" data-detail="${pack(m.q5.details.ea)}"><span>${m.q5.ea}</span><br>${m.q5.eap}%</button><button type="button" class="warmcell matrix-hit chart-hit" data-tooltip="Asked + not enough: ${m.q5.na} (${m.q5.nap}%)" data-detail="${pack(m.q5.details.na)}"><span>${m.q5.na}</span><br>${m.q5.nap}%</button><div class="rowhead">Did not ask</div><button type="button" class="bluecell matrix-hit chart-hit" data-tooltip="Did not ask + enough: ${m.q5.en} (${m.q5.enp}%)" data-detail="${pack(m.q5.details.en)}"><span>${m.q5.en}</span><br>${m.q5.enp}%</button><button type="button" class="warmcell matrix-hit chart-hit" data-tooltip="Did not ask + not enough: ${m.q5.nn} (${m.q5.nnp}%)" data-detail="${pack(m.q5.details.nn)}"><span>${m.q5.nn}</span><br>${m.q5.nnp}%</button></div><div class="matrix-note">Total: ${m.q5.total} students who did not receive the code</div>${m.q5.na?`<div class="attn red"><b>${m.q5.na} no-code student(s)</b>&nbsp;asked for the code without reaching N=${state.N} answers.</div>`:''}</section></div>`}
 function inspector(){const d=state.data;return `<div class="content"><div class="group-label">Processed data & validation</div><section class="card">${title('Processed data inspector','Review the exported live dataset and download the complete processed workbook.')}<div class="stat-row">${stat('Sessions',d.meta.session_count,'processed')}${stat('Turns',d.meta.turn_count,'turn-level rows')}${stat('Requests',d.meta.request_event_count,'code request events')}</div><a class="download-btn" href="/latest_processed_analysis.xlsx" download>↓ Download complete workbook</a><div class="validation-table"><div class="tr th"><span>Check</span><span>Status</span><span>Severity</span><span>Detail</span></div>${(d.validation||[]).map(r=>`<div class="tr"><span>${esc(r.check)}</span><span class="${r.status==='PASS'?'good':'bad'}">${esc(r.status)}</span><span>${esc(r.severity)}</span><span>${esc(r.detail)}</span></div>`).join('')}</div></section></div>`}
-function render(){const d=state.data;if(!d)return;Object.keys(plotRegistry).forEach(k=>delete plotRegistry[k]);const weeks=d.meta.weeks||[],classes=d.meta.classes||[];app.innerHTML=`<div class="app-shell ${state.sidebarCollapsed?'sidebar-collapsed':''}"><aside class="sidebar ${state.nav?'open':''}"><div class="side-brand"><div class="app-badge">CA</div><div class="side-brand-copy"><strong>Conversational<br>Assessment</strong><span>Analytics</span></div><button class="sidebar-collapse" id="collapse-sidebar" title="Hide sidebar" aria-label="Hide sidebar">‹</button><button class="nav-close" id="close-nav" aria-label="Close menu">✕</button></div><nav><button id="nav-dashboard" class="${state.page==='Dashboard'?'active':''}">▦ Dashboard</button><button id="nav-inspector" class="${state.page==='Processed data & validation'?'active':''}">▤ Processed data & validation</button></nav><section class="upload-panel"><div class="upload-title">Spreadsheet data</div><div class="upload-source">${esc(state.sourceLabel)}</div><label class="upload-btn">Upload Excel file(s)<input id="sheet-upload" type="file" accept=".xlsx,.xls" multiple></label>${state.uploaded?'<button type="button" id="reset-data" class="reset-data">Use bundled data</button>':''}${state.uploadStatus?`<div class="upload-status">${esc(state.uploadStatus)}</div>`:''}</section></aside><main class="main"><header class="fixed-header"><div class="header-inner"><button class="menu-btn" id="menu-btn" title="Show sidebar" aria-label="Show sidebar">☰</button><div class="title-wrap"><div class="app-badge">CA</div><div><div class="dashboard-title">Conversational Assessment Analytics</div><div class="dashboard-sub">${state.week==='All weeks'?'All weeks':`Week ${state.week}`} · ${esc(state.klass)} · evidence for the five instructor questions</div></div></div><div class="filters"><label>Week<select id="week-select"><option>All weeks</option>${weeks.map(w=>`<option value="${w}" ${String(state.week)===String(w)?'selected':''}>Week ${w}</option>`).join('')}</select></label><label>Class<select id="class-select"><option>All classes</option>${classes.map(c=>`<option ${state.klass===c?'selected':''}>${esc(c)}</option>`).join('')}</select></label></div></div></header><div class="header-space"></div>${state.page==='Dashboard'?dashboard():inspector()}</main><div id="chart-tooltip" class="chart-tooltip" role="tooltip"></div><div id="detail-backdrop" class="detail-backdrop"></div><aside id="detail-drawer" class="detail-drawer" aria-hidden="true"><div class="detail-drawer-head"><div><div class="eyebrow">Chart details</div><h3 id="detail-title"></h3><p id="detail-subtitle"></p></div><button type="button" id="detail-close" class="detail-close" aria-label="Close details">✕</button></div><div id="detail-body" class="detail-body"></div></aside></div>`;bind();hydratePlotlyCharts()}
+function render(){const d=state.data;if(!d)return;Object.keys(plotRegistry).forEach(k=>delete plotRegistry[k]);const weeks=d.meta.weeks||[],classes=d.meta.classes||[];app.innerHTML=`<div class="app-shell ${state.sidebarCollapsed?'sidebar-collapsed':''}"><aside class="sidebar ${state.nav?'open':''}"><div class="side-brand"><div class="app-badge">CA</div><div class="side-brand-copy"><strong>Conversational<br>Assessment</strong><span>Analytics</span></div><button class="sidebar-collapse" id="collapse-sidebar" title="Hide sidebar" aria-label="Hide sidebar">‹</button><button class="nav-close" id="close-nav" aria-label="Close menu">✕</button></div><nav><button id="nav-dashboard" class="${state.page==='Dashboard'?'active':''}">▦ Dashboard</button><button id="nav-inspector" class="${state.page==='Processed data & validation'?'active':''}">▤ Processed data & validation</button></nav></aside><main class="main"><header class="fixed-header"><div class="header-inner"><button class="menu-btn" id="menu-btn" title="Show sidebar" aria-label="Show sidebar">☰</button><div class="title-wrap"><div class="app-badge">CA</div><div><div class="dashboard-title">Conversational Assessment Analytics</div><div class="dashboard-sub">${state.week==='All weeks'?'All weeks':`Week ${state.week}`} · ${esc(state.klass)} · evidence for the five instructor questions</div></div></div><div class="filters"><label>Week<select id="week-select"><option>All weeks</option>${weeks.map(w=>`<option value="${w}" ${String(state.week)===String(w)?'selected':''}>Week ${w}</option>`).join('')}</select></label><label>Class<select id="class-select"><option>All classes</option>${classes.map(c=>`<option ${state.klass===c?'selected':''}>${esc(c)}</option>`).join('')}</select></label></div></div></header><div class="header-space"></div>${state.page==='Dashboard'?dashboard():inspector()}</main><div id="chart-tooltip" class="chart-tooltip" role="tooltip"></div><div id="detail-backdrop" class="detail-backdrop"></div><aside id="detail-drawer" class="detail-drawer" aria-hidden="true"><div class="detail-drawer-head"><div><div class="eyebrow">Chart details</div><h3 id="detail-title"></h3><p id="detail-subtitle"></p></div><button type="button" id="detail-close" class="detail-close" aria-label="Close details">✕</button></div><div id="detail-body" class="detail-body"></div></aside></div>`;bind();hydratePlotlyCharts()}
 function openDetail(detail,source){
   if(!detail)return;
   document.querySelectorAll('.chart-hit.selected').forEach(el=>el.classList.remove('selected'));
@@ -341,7 +288,8 @@ async function hydratePlotlyCharts(){
           tickfont:{size:11,color:'#475569'},
           showgrid:false,
           zeroline:false,
-          automargin:true
+          automargin:true,
+          title:opts.xTitle?{text:opts.xTitle,font:{size:11,color:'#475569'},standoff:8}:undefined
         },
         yaxis:{
           fixedrange:false,
@@ -464,8 +412,6 @@ function bindChartInteractions(){
   document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail()},{once:true});
 }
 function bind(){
-  document.getElementById('sheet-upload')?.addEventListener('change',e=>processSpreadsheetFiles(e.target.files));
-  document.getElementById('reset-data')?.addEventListener('click',()=>{state.data=state.bundledData;state.sourceLabel='Bundled dashboard data';state.uploadStatus='';state.uploaded=false;state.week='All weeks';state.klass='All classes';render()});
   document.getElementById('week-select')?.addEventListener('change',e=>{state.week=e.target.value;render()});
   document.getElementById('class-select')?.addEventListener('change',e=>{state.klass=e.target.value;render()});
   document.getElementById('n-slider')?.addEventListener('input',e=>{state.N=Number(e.target.value);render()});
@@ -488,4 +434,4 @@ function bind(){
   document.getElementById('close-nav')?.addEventListener('click',()=>{state.nav=false;render()});
   bindChartInteractions();
 }
-fetch('/dashboard_data.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('dashboard_data.json was not found. Run export_dashboard.py first.');return r.json()}).then(d=>{state.bundledData=d;state.data=d;render()}).catch(e=>app.innerHTML=`<div class="fatal"><div class="app-badge">CA</div><h1>Dashboard data not generated</h1><p>${esc(e.message)}</p></div>`);
+fetch('/dashboard_data.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('dashboard_data.json was not found. Run export_dashboard.py first.');return r.json()}).then(d=>{state.data=d;render()}).catch(e=>app.innerHTML=`<div class="fatal"><div class="app-badge">CA</div><h1>Dashboard data not generated</h1><p>${esc(e.message)}</p></div>`);
